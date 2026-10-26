@@ -449,11 +449,25 @@ def _engine_key_for_model(engine: Any, model: str) -> str | None:
     return None
 
 
-def _uses_direct_cloud_router(engine: Any, model: str) -> bool:
-    """Whether *model* should bypass the configured engine for direct cloud."""
+def _is_direct_cloud_model(engine: Any, model: str) -> bool:
+    """Whether *model* is a direct-cloud ID not owned by a configured engine.
+
+    Provider-qualified IDs (``vendor/model``) look like OpenRouter IDs, but a
+    configured gateway engine (LiteLLM, or an OpenAI-compatible router such as
+    OmniRoute on ``vllm``) may advertise them itself. Those stay with the
+    engine that listed them instead of being sent to the direct cloud router.
+    """
     from openjarvis.server.cloud_router import is_cloud_model
 
-    return is_cloud_model(model) and _engine_key_for_model(engine, model) != "litellm"
+    return is_cloud_model(model) and _engine_key_for_model(engine, model) in (
+        None,
+        "cloud",
+    )
+
+
+def _uses_direct_cloud_router(engine: Any, model: str) -> bool:
+    """Whether *model* should bypass the configured engine for direct cloud."""
+    return _is_direct_cloud_model(engine, model)
 
 
 def _handle_direct(
@@ -1111,19 +1125,16 @@ async def list_models(request: Request) -> ModelListResponse:
     configured LiteLLM engine remain here because LiteLLM owns their routing
     and may use provider-qualified IDs that resemble OpenRouter IDs.
     """
-    from openjarvis.server.cloud_router import is_cloud_model, list_local_models
+    from openjarvis.server.cloud_router import list_local_models
 
     # Prefer engine.list_models() so mock engines work in tests.
     # Filter out direct-cloud model IDs that may appear via MultiEngine, but
-    # retain provider-qualified IDs owned by the configured LiteLLM engine.
+    # retain provider-qualified IDs owned by a configured engine (LiteLLM, or
+    # an OpenAI-compatible gateway such as OmniRoute on vllm).
     # Fall back to direct Ollama query only when the engine returns nothing.
     engine = request.app.state.engine
     all_ids = await asyncio.to_thread(engine.list_models)
-    model_ids = [
-        m
-        for m in all_ids
-        if not is_cloud_model(m) or _engine_key_for_model(engine, m) == "litellm"
-    ]
+    model_ids = [m for m in all_ids if not _is_direct_cloud_model(engine, m)]
     if not model_ids:
         model_ids = await list_local_models()
 
