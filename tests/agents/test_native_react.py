@@ -419,6 +419,51 @@ class TestNativeReActAgent:
         assert result.tool_results[0].content == "21"
         assert result.tool_results[0].success is True
 
+    def test_invented_observation_and_final_answer_are_dropped(self):
+        """A reply that runs past its action still executes the action."""
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            _engine_response(
+                "Thought: Calculate.\nAction: calculator\n"
+                'Action Input: {"expression": "6*7"}\n'
+                "Observation: 41\nThought: Done.\nFinal Answer: 41"
+            ),
+            _engine_response("Thought: Done.\nFinal Answer: 42"),
+        ]
+        agent = NativeReActAgent(engine, "test-model", tools=[_CalculatorStub()])
+        result = agent.run("6 times 7")
+        assert result.tool_results[0].content == "42"
+        assert result.content == "42"
+        history = engine.generate.call_args_list[1].args[0]
+        assert not any("Observation: 41" in (m.content or "") for m in history)
+
+    def test_final_answer_after_action_is_dropped(self):
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            _engine_response(
+                "Action: calculator\n"
+                'Action Input: {"expression": "2+2"}\n'
+                "Final Answer: 5"
+            ),
+            _engine_response("Final Answer: 4"),
+        ]
+        agent = NativeReActAgent(engine, "test-model", tools=[_CalculatorStub()])
+        result = agent.run("2 plus 2")
+        assert len(result.tool_results) == 1
+        assert result.content == "4"
+
+    def test_final_answer_may_mention_observation(self):
+        """Without an action, an "Observation:" line is part of the answer."""
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        answer = "Two findings.\nObservation: sales rose.\nObservation: costs fell."
+        engine.generate.return_value = _engine_response(f"Final Answer: {answer}")
+        agent = NativeReActAgent(engine, "test-model", tools=[_CalculatorStub()])
+        result = agent.run("summarize")
+        assert result.content == answer
+
     def test_multi_tool_turns(self):
         """Three tool calls before final answer."""
         engine = MagicMock()
