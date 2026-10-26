@@ -54,6 +54,27 @@ the response can take one of two forms:
 {skill_examples}{tool_descriptions}"""
 
 
+def _first_step_only(text: str) -> str:
+    """Keep only the first step of a reply that runs ahead of itself.
+
+    Models served without stop sequences often keep writing past
+    ``Action Input``: they invent the Observation, or add a Final Answer right
+    after the action, so the action is never executed. Only the first step is
+    real, and an action that comes before a Final Answer wins. Replies without
+    an action are returned unchanged, so a Final Answer may mention
+    "Observation:" freely.
+    """
+    action = re.search(r"^\s*Action:", text, re.IGNORECASE | re.MULTILINE)
+    if action is None:
+        return text
+    rest = re.search(
+        r"\n\s*(?:Observation|Final Answer):", text[action.end() :], re.IGNORECASE
+    )
+    if rest:
+        text = text[: action.end() + rest.start()].rstrip()
+    return text
+
+
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result = {}
     for key, value in pairs:
@@ -284,7 +305,7 @@ class NativeReActAgent(ToolUsingAgent):
             for k in total_usage:
                 total_usage[k] += usage.get(k, 0)
 
-            content = result.get("content", "")
+            content = _first_step_only(result.get("content", ""))
             parsed = self._parse_response(content)
 
             if parsed.get("parse_error"):
