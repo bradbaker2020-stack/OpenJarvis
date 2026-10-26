@@ -428,25 +428,30 @@ def _remember_exchange(
     )
 
 
-def _engine_key_for_model(engine: Any, model: str) -> str | None:
-    """Resolve the engine that advertised *model* through wrapper layers."""
-    from openjarvis.engine.multi import MultiEngine
+def _unwrap_engine(engine: Any) -> Any:
+    """Strip instrumentation and guardrail wrappers from *engine*."""
     from openjarvis.security.guardrails import GuardrailsEngine
     from openjarvis.telemetry.instrumented_engine import InstrumentedEngine
 
     current = engine
-    while current is not None:
-        if isinstance(current, MultiEngine):
-            return current.engine_key_for(model)
+    while True:
         if isinstance(current, InstrumentedEngine):
             current = current._inner
-            continue
-        if isinstance(current, GuardrailsEngine):
+        elif isinstance(current, GuardrailsEngine):
             current = current._engine
-            continue
-        engine_id = getattr(current, "engine_id", None)
-        return engine_id if isinstance(engine_id, str) else None
-    return None
+        else:
+            return current
+
+
+def _engine_key_for_model(engine: Any, model: str) -> str | None:
+    """Resolve the engine that advertised *model* through wrapper layers."""
+    from openjarvis.engine.multi import MultiEngine
+
+    inner = _unwrap_engine(engine)
+    if isinstance(inner, MultiEngine):
+        return inner.engine_key_for(model)
+    engine_id = getattr(inner, "engine_id", None)
+    return engine_id if isinstance(engine_id, str) else None
 
 
 def _is_direct_cloud_model(engine: Any, model: str) -> bool:
@@ -457,12 +462,17 @@ def _is_direct_cloud_model(engine: Any, model: str) -> bool:
     OmniRoute on ``vllm``) may advertise them itself. Those stay with the
     engine that listed them instead of being sent to the direct cloud router.
     """
+    from openjarvis.engine.multi import MultiEngine
     from openjarvis.server.cloud_router import is_cloud_model
 
-    return is_cloud_model(model) and _engine_key_for_model(engine, model) in (
-        None,
-        "cloud",
-    )
+    if not is_cloud_model(model):
+        return False
+    inner = _unwrap_engine(engine)
+    if isinstance(inner, MultiEngine):
+        return inner.engine_key_for(model) in (None, "cloud")
+    # A single engine reports its own ID for every model, listed or not, so
+    # only LiteLLM is trusted to route provider-qualified IDs itself.
+    return getattr(inner, "engine_id", None) != "litellm"
 
 
 def _uses_direct_cloud_router(engine: Any, model: str) -> bool:

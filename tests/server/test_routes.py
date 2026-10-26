@@ -1607,6 +1607,62 @@ class TestModelsEndpoint:
         assert "Hello" in resp.text
         assert '"engine": "litellm"' in resp.text
 
+    def test_gateway_advertised_vendor_models_are_listed(self):
+        """IDs an OpenAI-compatible gateway lists stay with that gateway."""
+        from openjarvis.engine.multi import MultiEngine
+
+        gateway = _make_engine(models=["openai/gpt-4o-mini", "auto/fast"])
+        local = _make_engine(models=["qwen3:8b"])
+        engine = MultiEngine([("vllm", gateway), ("ollama", local)])
+        app = create_app(engine, "qwen3:8b", engine_name="multi", config=_test_config())
+
+        with patch(
+            "openjarvis.server.cloud_router.list_local_models",
+            new_callable=AsyncMock,
+        ) as list_local_models:
+            list_local_models.return_value = []
+            resp = TestClient(app).get("/v1/models")
+
+        assert resp.status_code == 200
+        ids = {item["id"] for item in resp.json()["data"]}
+        assert {"openai/gpt-4o-mini", "auto/fast", "qwen3:8b"} <= ids
+
+
+class TestDirectCloudRouting:
+    def test_gateway_owned_vendor_model_stays_on_gateway(self):
+        from openjarvis.engine.multi import MultiEngine
+        from openjarvis.server.routes import _uses_direct_cloud_router
+
+        gateway = _make_engine(models=["openai/gpt-4o-mini"])
+        engine = MultiEngine([("vllm", gateway)])
+        assert _uses_direct_cloud_router(engine, "openai/gpt-4o-mini") is False
+
+    def test_unadvertised_cloud_model_uses_direct_router(self):
+        from openjarvis.engine.multi import MultiEngine
+        from openjarvis.server.routes import _uses_direct_cloud_router
+
+        engine = MultiEngine([("ollama", _make_engine(models=["qwen3:8b"]))])
+        assert _uses_direct_cloud_router(engine, "gpt-4o") is True
+        assert _uses_direct_cloud_router(engine, "qwen3:8b") is False
+
+    def test_single_local_engine_does_not_claim_cloud_models(self):
+        """A lone engine reports its ID for any model; that is not ownership."""
+        from openjarvis.server.routes import _uses_direct_cloud_router
+
+        engine = _make_engine(models=["qwen3:8b"])
+        engine.engine_id = "ollama"
+        assert _uses_direct_cloud_router(engine, "gpt-4o") is True
+        assert _uses_direct_cloud_router(engine, "meta-llama/llama-3-8b") is True
+
+    def test_single_litellm_engine_keeps_provider_models(self):
+        from openjarvis.server.routes import _uses_direct_cloud_router
+
+        engine = _make_engine(models=["groq/llama-3.3-70b-versatile"])
+        engine.engine_id = "litellm"
+        assert (
+            _uses_direct_cloud_router(engine, "groq/llama-3.3-70b-versatile") is False
+        )
+
 
 # ---------------------------------------------------------------------------
 # Health endpoint tests
