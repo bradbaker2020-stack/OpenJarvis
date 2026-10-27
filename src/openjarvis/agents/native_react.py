@@ -75,6 +75,11 @@ def _first_step_only(text: str) -> str:
     return text
 
 
+_CONTINUE_STEP = (
+    "Continue this step: reply with Action and Action Input, or with Final Answer."
+)
+
+
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result = {}
     for key, value in pairs:
@@ -293,6 +298,7 @@ class NativeReActAgent(ToolUsingAgent):
             "completion_tokens": 0,
             "total_tokens": 0,
         }
+        nudged = False
 
         for _turn in range(self._max_turns):
             turns += 1
@@ -333,6 +339,19 @@ class NativeReActAgent(ToolUsingAgent):
                     metadata={**total_usage, "messages": msg_dicts},
                 )
 
+            # A reply that is only a Thought stopped mid-step (some reasoning
+            # models keep the action in their hidden reasoning). Ask once to
+            # finish the step instead of ending the run on it.
+            if (
+                not parsed["action"]
+                and not nudged
+                and content.lstrip().lower().startswith("thought:")
+            ):
+                nudged = True
+                messages.append(Message(role=Role.ASSISTANT, content=content))
+                messages.append(Message(role=Role.USER, content=_CONTINUE_STEP))
+                continue
+
             # No action? Treat content as final answer
             if not parsed["action"]:
                 self._emit_turn_end(turns=turns)
@@ -345,6 +364,7 @@ class NativeReActAgent(ToolUsingAgent):
                 )
 
             # Execute action
+            nudged = False
             messages.append(Message(role=Role.ASSISTANT, content=content))
 
             tool_call = ToolCall(

@@ -454,6 +454,36 @@ class TestNativeReActAgent:
         assert len(result.tool_results) == 1
         assert result.content == "4"
 
+    def test_thought_only_reply_is_asked_to_finish_the_step(self):
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            _engine_response("Thought: I should calculate 2+2."),
+            _engine_response(
+                "Thought: Calculate.\nAction: calculator\n"
+                'Action Input: {"expression": "2+2"}'
+            ),
+            _engine_response("Final Answer: 4"),
+        ]
+        agent = NativeReActAgent(engine, "test-model", tools=[_CalculatorStub()])
+        result = agent.run("2 plus 2")
+        assert result.content == "4"
+        assert len(result.tool_results) == 1
+        history = engine.generate.call_args_list[1].args[0]
+        assert any((m.content or "").startswith("Continue this step") for m in history)
+
+    def test_repeated_thought_only_reply_ends_the_run(self):
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            _engine_response("Thought: Hmm."),
+            _engine_response("Thought: Still thinking."),
+        ]
+        agent = NativeReActAgent(engine, "test-model", tools=[_CalculatorStub()])
+        result = agent.run("2 plus 2")
+        assert result.content == "Thought: Still thinking."
+        assert result.turns == 2
+
     def test_final_answer_may_mention_observation(self):
         """Without an action, an "Observation:" line is part of the answer."""
         engine = MagicMock()
